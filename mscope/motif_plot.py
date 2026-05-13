@@ -41,44 +41,20 @@ def heatmap(cfg, seq_order, grouped_motif_seq, sequence_lengths, dim_reduction, 
     
 
 
-    #handling single bp colors
-    single_motifs = ['A', 'C', 'G', 'T']
-    if 'N' in motif_counts:
-        single_motifs.append('N')                 # keeps the same logic you had
-
-    used_single_motifs = [x for x in motif_counts if x in single_motifs]
-    # ── 2. build ONE integer mapping and ONE colormap ─────────────────────────────
-    motif_to_idx = {m:i for i, m in enumerate(single_motifs)}   # A→0, C→1, …
-
-    # greys for A-T, yellow for N – same colours you chose
-    base_colours = [
-        (0.35, 0.35, 0.35),   # A
-        (0.55, 0.55, 0.55),   # C
-        (0.75, 0.75, 0.75),   # G
-        (0.90, 0.90, 0.90)    # T
-    ]
-    if 'N' in single_motifs:
-        base_colours.append('yellow')
-    
-
-    singlebase_used_cmap = matplotlib.colors.ListedColormap(base_colours)
-    #convert_color = {nuc: singlebase_used_cmap(idx) for nuc, idx in motif_to_idx.items()}
-
-    #show single value after the decimal point
-    if show_copy_number:
-        sblabels = [
-        f"{base} ({motif_counts[base] / float(len(grouped_motif_seq)):.1f})"
-        for base in single_motifs          # keeps A-C-G-T order
-        if base in motif_counts            # skip bases that don’t occur
-        ]
-    else:
-        sblabels = [base for base in single_motifs if base in motif_counts]
-    #sblabels = [f"{key} ({motif_counts[key] / float(len(grouped_motif_seq)):.1f})" for key in single_motifs[::-1]]
-    if len(sblabels) > 0:
-        single_bp_color(cfg, sblabels, cbar_sb_ax, singlebase_used_cmap)
-
-    convert_color = {nuc: singlebase_used_cmap(idx) for nuc, idx in motif_to_idx.items()}
-    convert_color.update({nuc.lower(): rgba for nuc, rgba in convert_color.items()})
+    # Treat all unassigned single-base regions as one neutral background category.
+    singlebase_color = matplotlib.colors.to_rgba((0.75, 0.75, 0.75))
+    convert_color = {
+        'A': singlebase_color,
+        'C': singlebase_color,
+        'G': singlebase_color,
+        'T': singlebase_color,
+        'N': singlebase_color,
+        'a': singlebase_color,
+        'c': singlebase_color,
+        'g': singlebase_color,
+        't': singlebase_color,
+        'n': singlebase_color,
+    }
 
     ordered_dim_reduction = dim_reduction.sort_values(by='dimension_reduction', ascending=True).reset_index(drop=True)
     embedding_motifs = ordered_dim_reduction['motif'].tolist()
@@ -215,17 +191,6 @@ def pop_heatmap(cfg, data, poplabels, ax, cbar, cmap, clabel):
     cbar.tick_params(labelsize=cfg.cbar_fontsize)
     cbar.title.set_fontsize(cfg.cbar_fontsize)
 
-def single_bp_color(cfg, sblabels, cbar, cmap):
-    bounds = np.arange(0, len(sblabels) + 1) - 0.5
-    norm = matplotlib.colors.BoundaryNorm(bounds, cmap.N)
-
-    cb = plt.colorbar(matplotlib.cm.ScalarMappable(cmap=cmap, norm=norm), cax=cbar, ticks=np.arange(len(sblabels)), spacing='uniform', orientation='vertical')
-    cbar.set_yticklabels(sblabels)
-    cb.outline.set_linewidth(0.1)
-    cb.outline.set_edgecolor('black')
-    cbar.tick_params(labelsize=cfg.cbar_fontsize)
-    cbar.title.set_fontsize(cfg.cbar_fontsize)
-
 def count_motifs(grouped_motif_seq):
     motif_counts = {}
     for seq, motifs in grouped_motif_seq.items():
@@ -305,43 +270,35 @@ class MotifPlot:
 
         COLORBAR_TITLE_VSPACE = 0.6
         CBAR_UNIT = 1.0
-        nsbmotifs = len([x for x in self.motif_counts if x in ["A", "T", "C", "G"]])
-        nmotifs = len(self.motif_counts) - nsbmotifs
-
-        #nmotifs = len(self.motif_counts) - 4 #correct for single base motifs
+        nmotifs = len(self.dim_reduction['motif']) if self.dim_reduction is not None else 0
         heatmap_height = 0.5 * self.nsamples
 
         #adapt CBAR_UNIT
-        CBAR_UNIT =  min(1.0, max(0.5, 0.5 * (float(self.nsamples) / nmotifs)))
+        CBAR_UNIT = min(1.0, max(0.5, 0.5 * (float(self.nsamples) / max(1, nmotifs))))
 
         #calculate vertical space needed for colorbars if we put them in one column
-        vspace_needed = CBAR_UNIT * len(self.motif_counts) + COLORBAR_TITLE_VSPACE
+        vspace_needed = CBAR_UNIT * nmotifs + COLORBAR_TITLE_VSPACE
         if self.plot_classes:
             vspace_needed += CBAR_UNIT * self.nclasses + COLORBAR_TITLE_VSPACE
 
 
         #determine if we need two columns for colorbars
-        col_destination = {'motifs':1, 'single_bp':1, 'classes':1} #default: all colorbars in col1
+        col_destination = {'motifs':1, 'classes':1} #default: all colorbars in col1
         if heatmap_height < vspace_needed:
             ncols = 2
             #calculate minimum vspace needed for each column
             if self.plot_classes:
-                vspace_needed1 = max(nmotifs * CBAR_UNIT, CBAR_UNIT * (nsbmotifs + self.nclasses) + COLORBAR_TITLE_VSPACE) #motifs in col1 , single bp and classes in col2
-                vspace_needed2 = max(len(self.motif_counts) * CBAR_UNIT + COLORBAR_TITLE_VSPACE, CBAR_UNIT * self.nclasses) #motifs and single bp in col1, classes in col2
-                if vspace_needed1 < vspace_needed2:
-                    col_destination['single_bp'] = 2
                 col_destination['classes'] = 2
-                vspace_needed = min(vspace_needed1, vspace_needed2)
+                vspace_needed = max(nmotifs * CBAR_UNIT + COLORBAR_TITLE_VSPACE,
+                                    CBAR_UNIT * self.nclasses + COLORBAR_TITLE_VSPACE)
             else:
-                vspace_needed = CBAR_UNIT * max(nmotifs, nsbmotifs)
-                col_destination['single_bp'] = 2
+                vspace_needed = CBAR_UNIT * nmotifs + COLORBAR_TITLE_VSPACE
         else:
             ncols = 1
             
         #determine space needed for labels of colorbars
         lblspace = {'motifs': (self.max_motif_length + 6) * (self.cfg.cbar_fontsize / 72.0), 
-                    'classes': (self.max_classlbl_length + 6) * (self.cfg.cbar_fontsize / 72.0),
-                    'single_bp': (1 + 6) * (self.cfg.cbar_fontsize / 72.0)
+                    'classes': (self.max_classlbl_length + 6) * (self.cfg.cbar_fontsize / 72.0)
                     }
         col_lblspace = [0] * ncols
         for key, value in col_destination.items():
@@ -423,19 +380,6 @@ class MotifPlot:
 
         axes['cbar_heatmap'] = fig.add_axes([colorbar_xpos[0], column1_max  - cbar_height / height, colorbar_axes_width, cbar_height / height], title="motifs")
         column1_max = axes['cbar_heatmap'].get_position().y0 - sep_dist_colorbar_y
-
-        #add color bar for singe bp. 
-        #cbar_sb_height = min(1.0 * 4, max_height)
-        cbar_sb_height = min(len([x for x in self.motif_counts if x in ["A", "T", "C", "G"]]) * CBAR_UNIT, max_height)
-
-        # see if we can fit the single bp motif colorbar below the motif colorbar
-        if col_destination['single_bp'] == 1:
-            axes['cbar_single_bp'] = fig.add_axes([colorbar_xpos[0], column1_max - cbar_sb_height / height, colorbar_axes_width, cbar_sb_height / height], title="single bp\nmotifs")
-            column1_max = axes['cbar_single_bp'].get_position().y0 - sep_dist_colorbar_y
-        else:
-            #put it next to it.
-            axes['cbar_single_bp'] = fig.add_axes([colorbar_xpos[1], column2_max - cbar_sb_height / height, colorbar_axes_width, cbar_sb_height / height], title="single bp\nmotifs")
-            column2_max = axes['cbar_single_bp'].get_position().y0 - sep_dist_colorbar_y
         
 
         if self.plot_classes:
@@ -495,7 +439,7 @@ class MotifPlot:
 
         heatmap(self.cfg, seq_order_list, self.grouped_motif_seq, self.sequence_lengths, self.dim_reduction, 
                         cmap=cmap, ax=ax, cbar_ax = axes['cbar_heatmap'], 
-                        cbar_sb_ax = axes['cbar_single_bp'],
+                        cbar_sb_ax = None,
                         motif_counts = self.motif_counts)
 
         ax.set(ylabel="")
