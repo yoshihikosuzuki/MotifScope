@@ -10,6 +10,18 @@ from scipy.spatial.distance import squareform
 import numpy as np
 import copy
 
+def resolve_motif_colors(cfg, nmotifs, cmap):
+    explicit_colors = getattr(cfg, "motif_colors", None)
+    if explicit_colors is not None:
+        if len(explicit_colors) < nmotifs:
+            raise ValueError(f"--motif_colors requires at least {nmotifs} colors, but only {len(explicit_colors)} were provided")
+        return np.array([matplotlib.colors.to_rgba(color) for color in explicit_colors[:nmotifs]])
+
+    if getattr(cfg, "motif_color_palette", None) is not None:
+        return np.array([cmap(i) for i in range(nmotifs)])
+
+    return cmap(np.linspace(0, 1, nmotifs))
+
 def heatmap(cfg, seq_order, grouped_motif_seq, sequence_lengths, dim_reduction, motif_counts, cmap, ax, cbar_ax, cbar_kws= None,cbar_sb_ax=None):
     assert len(seq_order) == len(grouped_motif_seq), "Number of sequences in seq_order and grouped_motif_seq should be the same"
     assert len(seq_order) == len(sequence_lengths), "Number of sequences in seq_order and sequence_lengths should be the same"
@@ -68,16 +80,23 @@ def heatmap(cfg, seq_order, grouped_motif_seq, sequence_lengths, dim_reduction, 
     convert_color = {nuc: singlebase_used_cmap(idx) for nuc, idx in motif_to_idx.items()}
     convert_color.update({nuc.lower(): rgba for nuc, rgba in convert_color.items()})
 
-    nmotifs = dim_reduction['motif'].nunique()
-    umotifs = dim_reduction['motif'].tolist()
+    ordered_dim_reduction = dim_reduction.sort_values(by='dimension_reduction', ascending=True).reset_index(drop=True)
+    embedding_motifs = ordered_dim_reduction['motif'].tolist()
+    nmotifs = len(embedding_motifs)
+    umotifs = getattr(cfg, "legend_motifs", None)
+    if umotifs is None:
+        umotifs = embedding_motifs
+    else:
+        allowed_motifs = set(embedding_motifs)
+        umotifs = [motif for motif in umotifs if motif in allowed_motifs]
 
     # Create the motif colormap
-    cmap1 = plt.get_cmap('YlGnBu_r')
-    motif_colors = cmap(np.linspace(0, 1, nmotifs))
+    motif_colors = resolve_motif_colors(cfg, nmotifs, cmap)
     motif_cmap = matplotlib.colors.ListedColormap(motif_colors)
 
     # Normalize for the motif part of the combined colormap
-    norm = matplotlib.colors.BoundaryNorm(np.arange(len(umotifs) + 1) - 0.5, len(umotifs))
+    norm = matplotlib.colors.BoundaryNorm(np.arange(len(embedding_motifs) + 1) - 0.5, len(embedding_motifs))
+    motif_to_color_idx = {motif: idx for idx, motif in enumerate(embedding_motifs)}
 
     colorcache = {}
     def cache_color(value):
@@ -145,13 +164,18 @@ def heatmap(cfg, seq_order, grouped_motif_seq, sequence_lengths, dim_reduction, 
         p = PatchCollection(rectangles, match_original = True)
         ax.add_collection(p)
 
-    cb = plt.colorbar(matplotlib.cm.ScalarMappable(cmap=motif_cmap, norm=norm), cax=cbar_ax, ticks=np.arange(len(umotifs)), spacing='uniform', orientation='vertical')
+    legend_colors = [motif_cmap(norm(motif_to_color_idx[motif])) for motif in umotifs]
+    legend_cmap = matplotlib.colors.ListedColormap(legend_colors)
+    legend_norm = matplotlib.colors.BoundaryNorm(np.arange(len(umotifs) + 1) - 0.5, len(umotifs))
+
+    cb = plt.colorbar(matplotlib.cm.ScalarMappable(cmap=legend_cmap, norm=legend_norm), cax=cbar_ax, ticks=np.arange(len(umotifs)), spacing='uniform', orientation='vertical')
     if show_copy_number:
         ulabels = [f"{motif} ({motif_counts.get(motif, 0) / float(len(grouped_motif_seq)):.1f})" for motif in umotifs]
     else:
         ulabels = umotifs
 
     cbar_ax.set_yticklabels(ulabels)
+    cbar_ax.invert_yaxis()
     cbar_ax.tick_params(labelsize=cfg.cbar_fontsize)
     cbar_ax.title.set_fontsize(cfg.cbar_fontsize)
 
@@ -452,7 +476,11 @@ class MotifPlot:
 
         sequences = self._sequence_id_to_label(seq_order_list)
        
-        if self.cfg.args.embed_motif_method == "random":
+        if self.cfg.motif_colors is not None:
+            cmap = matplotlib.colors.ListedColormap(self.cfg.motif_colors[:len(self.dim_reduction.motif.unique())])
+        elif self.cfg.motif_color_palette is not None:
+            cmap = plt.get_cmap(self.cfg.motif_color_palette, len(self.dim_reduction.motif.unique()))
+        elif self.cfg.args.embed_motif_method == "random":
             g = len(self.dim_reduction.motif.unique())
             colors = np.random.rand(g, 3)
             # Create a colormap from the random colors
@@ -477,12 +505,14 @@ class MotifPlot:
         while (self.plot_seq_length / pos_step_sizes[pos_cur]) > 10.0 and pos_cur < len(pos_step_sizes) - 1:
             pos_cur += 1
         step_size = pos_step_sizes[pos_cur]
-        xticks_positions = np.arange(0, ((self.plot_seq_length//step_size) + 1) * step_size + 1, step_size)
-        xticks_labels = [str(x) for x in xticks_positions]
-        ax.set_xlim(0, self.plot_seq_length + 0.5)
+        xticks_positions = np.arange(0, self.plot_seq_length + 1, step_size, dtype=float)
+        if len(xticks_positions) == 0 or not np.isclose(xticks_positions[-1], self.plot_seq_length):
+            xticks_positions = np.append(xticks_positions, float(self.plot_seq_length))
+        xticks_labels = [str(int(x)) if float(x).is_integer() else str(x) for x in xticks_positions]
         ax.tick_params(right=True, left = False, top=False, labelright=True, labelleft=False, labeltop=False, rotation=0)
         ax.set_xticks(xticks_positions + 0.5)
         ax.set_xticklabels(xticks_labels, rotation=90, fontsize=self.cfg.heatmap_labels_xfontsize)
+        ax.set_xlim(0, self.plot_seq_length + 0.5)
         ax.tick_params(axis ='x', which ='major')
         
         ax.set_yticks(np.arange(self.nsamples) + 0.5)

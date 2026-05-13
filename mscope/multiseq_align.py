@@ -295,7 +295,6 @@ class POAAlignerNucleotide(Aligner):
 
         return ngrouped_positions, sequence_lengths, edit_distance
 
-
     def _translate_position(self, grouped_positions, result, seq_ids):
         """Translate the motifplacement to a new position based on a conversion dictionary from the alignment.
         

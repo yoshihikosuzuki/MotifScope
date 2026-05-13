@@ -42,6 +42,11 @@ class Config:
         self.linewidth = 0.25
         self.singlebase_edges = True
         self.show_legend_copy_number = True
+        self.legend_motif_order = 'embedding'
+        self.legend_motif_order_reverse = False
+        self.legend_motifs = None
+        self.motif_color_palette = None
+        self.motif_colors = None
         self.x_axis_max = None
 
         self.cbar_fontsize = 20
@@ -141,6 +146,96 @@ def build_ref_motif_metadata(ref_motifs_list):
             ref_motifs_dict_r[canonical] = motif
 
     return ref_motifs_dict_r, motif_order_map
+
+def get_unique_motifs_in_order(ref_motifs_list):
+    unique_motifs = []
+    seen = set()
+    for motif in ref_motifs_list:
+        if motif not in seen:
+            unique_motifs.append(motif)
+            seen.add(motif)
+    return unique_motifs
+
+def count_exact_motif_occurrences(seq, motif):
+    _, positions = pylibsais.kmer_mask_simple(seq, motif, "#")
+    return len(positions)
+
+def order_reference_motifs(ref_motifs_list, seq, order_mode='specified'):
+    unique_motifs = get_unique_motifs_in_order(ref_motifs_list)
+    if order_mode == 'frequency':
+        motif_counts = {
+            motif: count_exact_motif_occurrences(seq, motif)
+            for motif in unique_motifs
+        }
+        motif_order = {motif: idx for idx, motif in enumerate(unique_motifs)}
+        return sorted(
+            unique_motifs,
+            key=lambda motif: (-motif_counts[motif], motif_order[motif])
+        )
+    return unique_motifs
+
+def assign_reference_motifs_exact(seq, ref_motifs_list, min_count=2, order_mode='specified'):
+    selected_kmers = []
+    marked_positions = []
+    ordered_motifs = order_reference_motifs(ref_motifs_list, seq, order_mode=order_mode)
+
+    for motif in ordered_motifs:
+        seq, positions = pylibsais.kmer_mask_simple(seq, motif, '#')
+        if len(positions) < min_count:
+            continue
+        selected_kmers.append({'kmer': motif})
+        marked_positions.extend((pos, motif) for pos in positions)
+
+    return selected_kmers, marked_positions, seq
+
+def count_grouped_motif_occurrences(grouped_positions, allowed_motifs=None):
+    allowed = set(allowed_motifs) if allowed_motifs is not None else None
+    motif_counts = {}
+    for motifs in grouped_positions.values():
+        for mp in motifs:
+            if mp.singlebase:
+                continue
+            if allowed is not None and mp.motif not in allowed:
+                continue
+            motif_counts[mp.motif] = motif_counts.get(mp.motif, 0) + mp.count
+    return motif_counts
+
+def count_all_position_motif_occurrences(all_positions, allowed_motifs=None):
+    allowed = set(allowed_motifs) if allowed_motifs is not None else None
+    motif_counts = {}
+    for _, _, motif, _ in all_positions:
+        if len(motif) <= 1:
+            continue
+        if allowed is not None and motif not in allowed:
+            continue
+        motif_counts[motif] = motif_counts.get(motif, 0) + 1
+    return motif_counts
+
+def build_legend_motif_order(dim_reduction_result, all_positions, order_mode='embedding', ref_motifs_list=None, reverse=False):
+    ordered_dim_reduction = dim_reduction_result.sort_values(by='dimension_reduction', ascending=True).reset_index(drop=True)
+    embedding_order = ordered_dim_reduction['motif'].tolist()
+    ordered_motifs = embedding_order
+
+    if order_mode == 'frequency':
+        motif_counts = count_all_position_motif_occurrences(all_positions, embedding_order)
+        embedding_rank = {motif: idx for idx, motif in enumerate(embedding_order)}
+        ordered_motifs = sorted(
+            embedding_order,
+            key=lambda motif: (-motif_counts.get(motif, 0), embedding_rank[motif])
+        )
+    elif order_mode == 'specified' and ref_motifs_list is not None:
+        embedding_order_set = set(embedding_order)
+        specified_order = [
+            motif for motif in get_unique_motifs_in_order(ref_motifs_list)
+            if motif in embedding_order_set
+        ]
+        specified_set = set(specified_order)
+        ordered_motifs = specified_order + [motif for motif in embedding_order if motif not in specified_set]
+
+    if reverse:
+        ordered_motifs = list(reversed(ordered_motifs))
+
+    return ordered_motifs
 
 def sort_candidate_results(res, order_mode='default', motif_order_map=None, allowed_min_kmers=None):
     if allowed_min_kmers is not None:
@@ -863,6 +958,9 @@ parser.add_argument('-motif', '--motif', dest = 'ref_motifs', type = str, requir
 parser.add_argument('--only_specified_motifs', default = 'False', type = str, dest = 'only_specified_motifs', choices=['True', 'False'],
                     help = 'When -motif is provided, only use motifs from the motif file. Boolean (True/False). Default: False')
 
+parser.add_argument('--use_all_specified_motifs', default = 'False', type = str, dest = 'use_all_specified_motifs', choices=['True', 'False'],
+                    help = 'When -motif and --only_specified_motifs are provided, assign specified motifs by exact matching in the selected motif order, without requiring tandem-repeat selection thresholds. Boolean (True/False). Default: False')
+
 parser.add_argument('--motif_assignment_order', default = 'default', type = str, dest = 'motif_assignment_order', choices=['default', 'frequency', 'specified'],
                     help = 'Order for assigning motifs. Use default, frequency, or specified. "specified" follows the order in the -motif file. Default: default')
 
@@ -897,6 +995,18 @@ parser.add_argument('--motif_border_width', default = None, dest = 'motif_border
 parser.add_argument('--legend_copy_number', default = 'True', type = str, dest = 'legend_copy_number', choices=['True', 'False'],
                     help = 'Show average copy number in motif legend labels. Boolean (True/False). Default: True')
 
+parser.add_argument('--legend_motif_order', default = 'embedding', type = str, dest = 'legend_motif_order', choices=['embedding', 'frequency', 'specified'],
+                    help = 'Order of motifs in the legend. Use embedding, frequency, or specified. "specified" follows the -motif file order. Default: embedding')
+
+parser.add_argument('--legend_motif_order_reverse', default = 'False', type = str, dest = 'legend_motif_order_reverse', choices=['True', 'False'],
+                    help = 'Reverse the motif legend order after applying --legend_motif_order. Boolean (True/False). Default: False')
+
+parser.add_argument('--motif_color_palette', default = None, dest = 'motif_color_palette', type = str,
+                    help = 'Matplotlib colormap name to use for motif colors, e.g. tab20 or Set3. Default: current behavior')
+
+parser.add_argument('--motif_colors', default = None, dest = 'motif_colors', type = str,
+                    help = 'Comma-separated list of colors to use for motifs, e.g. "#1f77b4,#ff7f0e,#2ca02c". Overrides --motif_color_palette')
+
 parser.add_argument('--x_axis_max', default = None, dest = 'x_axis_max', type = int,
                     help = 'Upper limit of the x-axis in sequence-position units. Use this to crop excess whitespace. Default: full sequence length')
 
@@ -915,13 +1025,34 @@ if args.min_count < 1:
     parser.error("--min_count must be >= 1")
 if args.only_specified_motifs == "True" and not args.ref_motifs:
     parser.error("--only_specified_motifs requires -motif")
+if args.use_all_specified_motifs == "True" and args.only_specified_motifs != "True":
+    parser.error("--use_all_specified_motifs requires --only_specified_motifs True")
+if args.use_all_specified_motifs == "True" and not args.ref_motifs:
+    parser.error("--use_all_specified_motifs requires -motif")
 if args.motif_assignment_order == "specified" and not args.ref_motifs:
     parser.error("--motif_assignment_order specified requires -motif")
+if args.legend_motif_order == "specified" and not args.ref_motifs:
+    parser.error("--legend_motif_order specified requires -motif")
+if args.motif_color_palette is not None:
+    try:
+        plt.get_cmap(args.motif_color_palette)
+    except ValueError:
+        parser.error(f"Unknown colormap: {args.motif_color_palette}")
 
 cfg.args = args
 if args.motif_border_width is not None:
     cfg.linewidth = args.motif_border_width
 cfg.show_legend_copy_number = (args.legend_copy_number == "True")
+cfg.legend_motif_order = args.legend_motif_order
+cfg.legend_motif_order_reverse = (args.legend_motif_order_reverse == "True")
+cfg.motif_color_palette = args.motif_color_palette
+if args.motif_colors is not None:
+    cfg.motif_colors = [color.strip() for color in args.motif_colors.split(",") if color.strip()]
+    if not cfg.motif_colors:
+        parser.error("--motif_colors requires at least one color")
+    invalid_colors = [color for color in cfg.motif_colors if not matplotlib.colors.is_color_like(color)]
+    if invalid_colors:
+        parser.error(f"Invalid colors in --motif_colors: {', '.join(invalid_colors)}")
 cfg.x_axis_max = args.x_axis_max
 
 #args = parser.parse_args()
@@ -939,8 +1070,9 @@ max_kmer_size = args.max_kmer_size
 min_kmer_size = args.min_kmer_size
 run_msa = args.run_msa
 motif_guided = args.ref_motifs is not None
-ref_motifs = args.ref_motifs
+ref_motifs_path = args.ref_motifs
 strict_motifs = args.only_specified_motifs == "True"
+use_all_specified_motifs = args.use_all_specified_motifs == "True"
 motif_assignment_order = args.motif_assignment_order
 min_count = args.min_count
 output_prefix = args.output_prefix
@@ -977,6 +1109,7 @@ if reverse == "True":
     all_seq_dict = get_reverse_complements(all_seq_dict)
 
 seq_concat, seq_index, seq_keys = prepare_suffix_string(all_seq_dict)
+ref_motifs_list = None
 
 if not motif_guided:
     candidate_kmer, masked_postion, masked_seq = select_all_kmer(
@@ -988,20 +1121,28 @@ if not motif_guided:
         order_mode=motif_assignment_order,
     )
 else:
-    with open(ref_motifs, 'r') as ref:
-        ref_motifs = ref.readlines()
-    ref_motifs_list = [i.strip().split("\t") for i in ref_motifs]
+    with open(ref_motifs_path, 'r') as ref:
+        ref_motif_lines = ref.readlines()
+    ref_motifs_list = [i.strip().split("\t") for i in ref_motif_lines]
     ref_motifs_list = [i for l in ref_motifs_list for i in l if i]
-    candidate_kmer, masked_postion, masked_seq = select_all_kmer_motif_guided(
-        seq_concat,
-        seq_index,
-        min_kmer_size,
-        max_kmer_size,
-        ref_motifs_list,
-        min_count=min_count,
-        order_mode=motif_assignment_order,
-        strict_motifs=strict_motifs,
-    )
+    if strict_motifs and use_all_specified_motifs:
+        candidate_kmer, masked_postion, masked_seq = assign_reference_motifs_exact(
+            seq_concat,
+            ref_motifs_list,
+            min_count=min_count,
+            order_mode=motif_assignment_order,
+        )
+    else:
+        candidate_kmer, masked_postion, masked_seq = select_all_kmer_motif_guided(
+            seq_concat,
+            seq_index,
+            min_kmer_size,
+            max_kmer_size,
+            ref_motifs_list,
+            min_count=min_count,
+            order_mode=motif_assignment_order,
+            strict_motifs=strict_motifs,
+        )
 
 masked_postion = mask_all_seq(candidate_kmer, masked_postion, masked_seq)
 
@@ -1037,6 +1178,13 @@ if figure == "True":
 
     #sort dimension reduction result
     dimension_reduction_result = dimension_reduction_result.sort_values(by = "dimension_reduction")
+    cfg.legend_motifs = build_legend_motif_order(
+        dimension_reduction_result,
+        all_positions,
+        order_mode=args.legend_motif_order,
+        ref_motifs_list=ref_motifs_list,
+        reverse=cfg.legend_motif_order_reverse,
+    )
         
 
     has_classes = args.sample_class is not None
