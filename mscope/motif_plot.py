@@ -14,12 +14,13 @@ def heatmap(cfg, seq_order, grouped_motif_seq, sequence_lengths, dim_reduction, 
     assert len(seq_order) == len(grouped_motif_seq), "Number of sequences in seq_order and grouped_motif_seq should be the same"
     assert len(seq_order) == len(sequence_lengths), "Number of sequences in seq_order and sequence_lengths should be the same"
    
-    edgecolor = cfg.edgecolor
     linewidth = cfg.linewidth
-    #linewidth = 0.0001
+    show_borders = linewidth > 0
+    show_copy_number = getattr(cfg, "show_legend_copy_number", True)
+    edgecolor = cfg.edgecolor if show_borders else 'none'
 
     #to add singlebase edges, set singlebase_edges to True in the Config section in the 'motifscope' file
-    if cfg.singlebase_edges:
+    if cfg.singlebase_edges and show_borders:
         singlebase_linewidth = linewidth
         singlebase_edgecolor = edgecolor
     else:
@@ -52,11 +53,14 @@ def heatmap(cfg, seq_order, grouped_motif_seq, sequence_lengths, dim_reduction, 
     #convert_color = {nuc: singlebase_used_cmap(idx) for nuc, idx in motif_to_idx.items()}
 
     #show single value after the decimal point
-    sblabels = [
-    f"{base} ({motif_counts[base] / float(len(grouped_motif_seq)):.1f})"
-    for base in single_motifs          # keeps A-C-G-T order
-    if base in motif_counts            # skip bases that don’t occur
-    ]
+    if show_copy_number:
+        sblabels = [
+        f"{base} ({motif_counts[base] / float(len(grouped_motif_seq)):.1f})"
+        for base in single_motifs          # keeps A-C-G-T order
+        if base in motif_counts            # skip bases that don’t occur
+        ]
+    else:
+        sblabels = [base for base in single_motifs if base in motif_counts]
     #sblabels = [f"{key} ({motif_counts[key] / float(len(grouped_motif_seq)):.1f})" for key in single_motifs[::-1]]
     if len(sblabels) > 0:
         single_bp_color(cfg, sblabels, cbar_sb_ax, singlebase_used_cmap)
@@ -110,15 +114,15 @@ def heatmap(cfg, seq_order, grouped_motif_seq, sequence_lengths, dim_reduction, 
                     ax.add_collection(q)
             else: 
                 color = cache_color(color_value)
-                if not mp.leftborder or not mp.rightborder:
+                if not show_borders or not mp.leftborder or not mp.rightborder:
                     rectangles.append(Rectangle((start, ypos), end - start, 1, fill=True,  lw=0, facecolor=color, clip_on=False))
-                    if mp.leftborder:
+                    if show_borders and mp.leftborder:
                         motif_sep_lines.append(((start, ypos), (start, ypos + 1)))
-                    if mp.rightborder:
+                    if show_borders and mp.rightborder:
                         motif_sep_lines.append(((end, ypos), (end, ypos + 1)))
                 else:
                     rectangles.append(Rectangle((start, ypos), end - start, 1, fill=True, edgecolor=edgecolor, lw=linewidth, facecolor=color, clip_on=False))
-                if count > 0:
+                if show_borders and count > 0:
                     xstart = start + mp.first_motif_offset
                     xcount = int(np.ceil(count - mp.first_motif_offset / len(mp.motif)))
                     xend = xstart + len(mp.motif) * xcount
@@ -130,18 +134,22 @@ def heatmap(cfg, seq_order, grouped_motif_seq, sequence_lengths, dim_reduction, 
 
     p = PatchCollection(rectangles, match_original = True)            
     ax.add_collection(p)
-    l = LineCollection(motif_sep_lines, color=edgecolor, lw=linewidth)
-    ax.add_collection(l)
+    if show_borders and motif_sep_lines:
+        l = LineCollection(motif_sep_lines, color=edgecolor, lw=linewidth)
+        ax.add_collection(l)
     ax.set_ylim(0, len(grouped_motif_seq))
     
-    ypos = np.arange(len(seq_order))
-    rectangles = [Rectangle((0, y), sequence_lengths[seq], 1, fill=False, edgecolor=edgecolor, lw=linewidth, facecolor=edgecolor, clip_on=False) for seq,y in zip(seq_order,ypos)]
-    p = PatchCollection(rectangles, match_original = True)
-    ax.add_collection(p)
+    if show_borders:
+        ypos = np.arange(len(seq_order))
+        rectangles = [Rectangle((0, y), sequence_lengths[seq], 1, fill=False, edgecolor=edgecolor, lw=linewidth, facecolor=edgecolor, clip_on=False) for seq,y in zip(seq_order,ypos)]
+        p = PatchCollection(rectangles, match_original = True)
+        ax.add_collection(p)
 
     cb = plt.colorbar(matplotlib.cm.ScalarMappable(cmap=motif_cmap, norm=norm), cax=cbar_ax, ticks=np.arange(len(umotifs)), spacing='uniform', orientation='vertical')
-    #ulabels = [f"{motif} ({motif_counts[motif] / float(len(grouped_motif_seq)):.1f})" for motif in umotifs]
-    ulabels = [f"{motif} ({motif_counts.get(motif, 0) / float(len(grouped_motif_seq)):.1f})" for motif in umotifs]
+    if show_copy_number:
+        ulabels = [f"{motif} ({motif_counts.get(motif, 0) / float(len(grouped_motif_seq)):.1f})" for motif in umotifs]
+    else:
+        ulabels = umotifs
 
     cbar_ax.set_yticklabels(ulabels)
     cbar_ax.tick_params(labelsize=cfg.cbar_fontsize)
@@ -507,6 +515,5 @@ class MotifPlot:
             pop_colormap = plt.get_cmap('tab20c')
 
         pop_heatmap(self.cfg, groupvalues, unique_groups, ax, cbaxes, pop_colormap, self.classes_label)
-
 
 

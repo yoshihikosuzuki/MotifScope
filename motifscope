@@ -40,7 +40,8 @@ class Config:
 
         self.edgecolor = 'black'
         self.linewidth = 0.25
-        self.singlebase_edges=True
+        self.singlebase_edges = True
+        self.show_legend_copy_number = True
 
         self.cbar_fontsize = 20
         self.heatmap_labels_xfontsize = 20
@@ -818,6 +819,12 @@ parser.add_argument('-format', '--format', default = 'pdf', dest = 'format', cho
 parser.add_argument('-figure', '--figure', default = 'True', type = str, dest = 'figure', choices=['True', 'False'],
                     help = 'Outputs figure. Boolean (True/False). Default: True')
 
+parser.add_argument('--motif_border_width', default = None, dest = 'motif_border_width', type = float,
+                    help = 'Width of motif borders and separator lines. Set to 0 to hide them. Default: 0.25')
+
+parser.add_argument('--legend_copy_number', default = 'True', type = str, dest = 'legend_copy_number', choices=['True', 'False'],
+                    help = 'Show average copy number in motif legend labels. Boolean (True/False). Default: True')
+
 parser.add_argument('-o', '--output_prefix', type = str, dest = 'output_prefix', required = True, metavar = "ouput",
                     help = 'Prefix of output files.')
 
@@ -825,8 +832,13 @@ args, unknown = parser.parse_known_args()
 if unknown:
     parser.error(f"Unknown arguments: {' '.join(unknown)}")
 
+if args.motif_border_width is not None and args.motif_border_width < 0:
+    parser.error("--motif_border_width must be >= 0")
 
 cfg.args = args
+if args.motif_border_width is not None:
+    cfg.linewidth = args.motif_border_width
+cfg.show_legend_copy_number = (args.legend_copy_number == "True")
 
 #args = parser.parse_args()
 
@@ -966,5 +978,4 @@ if args.profile:
         ps.print_callees()
 
 print('DONE')
-
 
