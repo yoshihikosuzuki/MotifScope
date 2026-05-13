@@ -233,6 +233,10 @@ class MotifPlot:
         
         self.sequence_lengths = sequence_lengths
         self.max_seq_length = max(self.sequence_lengths.values())
+        if self.cfg.x_axis_max is None:
+            self.plot_seq_length = self.max_seq_length
+        else:
+            self.plot_seq_length = min(self.max_seq_length, self.cfg.x_axis_max)
         self.nsamples = len(grouped_motif_seq)
         self.motif_counts = count_motifs(self.grouped_motif_seq)
         
@@ -329,7 +333,7 @@ class MotifPlot:
         CLASSES_SPACE=0.35
         DENDROGRAM_SPACE=4
         SEQLBL_SPACE = (self.max_seqlbl_length + 3) * (self.cfg.heatmap_labels_yfontsize / 72.0)
-        width = sum(COLORBAR_SPACE) + max(0.015 * self.max_seq_length, 20)
+        width = sum(COLORBAR_SPACE) + max(0.015 * self.plot_seq_length, 20)
         width += SEQLBL_SPACE
 
         width += CLASSES_SPACE if self.plot_classes else 0
@@ -470,11 +474,12 @@ class MotifPlot:
 
         pos_step_sizes = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000]
         pos_cur = 0
-        while (self.max_seq_length / pos_step_sizes[pos_cur]) > 10.0 and pos_cur < len(pos_step_sizes) - 1:
+        while (self.plot_seq_length / pos_step_sizes[pos_cur]) > 10.0 and pos_cur < len(pos_step_sizes) - 1:
             pos_cur += 1
         step_size = pos_step_sizes[pos_cur]
-        xticks_positions = np.arange(0, ((self.max_seq_length//step_size) + 1) * step_size + 1, step_size)
+        xticks_positions = np.arange(0, ((self.plot_seq_length//step_size) + 1) * step_size + 1, step_size)
         xticks_labels = [str(x) for x in xticks_positions]
+        ax.set_xlim(0, self.plot_seq_length + 0.5)
         ax.tick_params(right=True, left = False, top=False, labelright=True, labelleft=False, labeltop=False, rotation=0)
         ax.set_xticks(xticks_positions + 0.5)
         ax.set_xticklabels(xticks_labels, rotation=90, fontsize=self.cfg.heatmap_labels_xfontsize)
@@ -515,5 +520,3 @@ class MotifPlot:
             pop_colormap = plt.get_cmap('tab20c')
 
         pop_heatmap(self.cfg, groupvalues, unique_groups, ax, cbaxes, pop_colormap, self.classes_label)
-
-

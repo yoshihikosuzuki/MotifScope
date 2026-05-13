@@ -42,6 +42,7 @@ class Config:
         self.linewidth = 0.25
         self.singlebase_edges = True
         self.show_legend_copy_number = True
+        self.x_axis_max = None
 
         self.cbar_fontsize = 20
         self.heatmap_labels_xfontsize = 20
@@ -124,7 +125,46 @@ def select_best_perm_kmer(new_kmer, kmer_list, previous_kmer):
     kmer_idx = perm_kmer_score.index(max(perm_kmer_score))
     return perm_kmer_exist[kmer_idx]
 
-def select_best_kmers(k_min, k_max, seq, index, used_kmer, round, min_count=2, min_indiv_count=2, min_consecutive_count=2, min_consecutive_bp=6):
+def build_ref_motif_metadata(ref_motifs_list):
+    ref_motifs_dict = {}
+    motif_order_map = {}
+    for idx, motif in enumerate(ref_motifs_list):
+        canonical = min([motif[x:] + motif[:x] for x in range(len(motif))])
+        ref_motifs_dict[motif] = canonical
+        if canonical not in motif_order_map:
+            motif_order_map[canonical] = idx
+
+    ref_motifs_dict_r = {}
+    for motif in ref_motifs_list:
+        canonical = ref_motifs_dict[motif]
+        if canonical not in ref_motifs_dict_r:
+            ref_motifs_dict_r[canonical] = motif
+
+    return ref_motifs_dict_r, motif_order_map
+
+def sort_candidate_results(res, order_mode='default', motif_order_map=None, allowed_min_kmers=None):
+    if allowed_min_kmers is not None:
+        res = [x for x in res if x['min_kmer'] in allowed_min_kmers]
+
+    if order_mode == 'frequency':
+        return sorted(
+            res,
+            key=lambda x: (-x['suffix_cnt'], -x['max_indiv_seq_count'], -x['max_consecutive_masked'], -x['total_masked'], x['kmer'])
+        )
+
+    if order_mode == 'specified':
+        motif_order_map = motif_order_map or {}
+        return sorted(
+            res,
+            key=lambda x: (motif_order_map.get(x['min_kmer'], float('inf')), -x['suffix_cnt'], -x['max_indiv_seq_count'], -x['max_consecutive_masked'], -x['total_masked'], x['kmer'])
+        )
+
+    return sorted(
+        res,
+        key=lambda x: (-x['max_consecutive_masked'], -x['max_indiv_seq_count'], -x['total_masked'], -len(x['kmer']), x['kmer'])
+    )
+
+def select_best_kmers(k_min, k_max, seq, index, used_kmer, round, min_count=2, min_indiv_count=2, min_consecutive_count=2, min_consecutive_bp=6, order_mode='default', motif_order_map=None, allowed_min_kmers=None):
     """Select k-mers based on the amount of sequence masked.
 
     :param k_min: the minimum k-mer length
@@ -185,7 +225,7 @@ def select_best_kmers(k_min, k_max, seq, index, used_kmer, round, min_count=2, m
         res.append({'kmer':kmer_s, 'min_kmer': min_kmer, 'suffix_cnt': kmer_cnt, 'total_masked': total_masked, 
                         'max_indiv_seq_count':max_indiv_seq_count, 'max_consecutive_masked':max_consecutive_count * kmer_len, 'pos':positions, 'idx':kmer_idx})
     
-    res.sort(key=lambda x: (x['max_consecutive_masked'], x['max_indiv_seq_count'], x['total_masked'], len(x['kmer']), x['kmer']), reverse=True)
+    res = sort_candidate_results(res, order_mode=order_mode, motif_order_map=motif_order_map, allowed_min_kmers=allowed_min_kmers)
 
     
     print(f'KMER EVALUATED: {evaluated}')
@@ -230,7 +270,7 @@ def select_best_kmers(k_min, k_max, seq, index, used_kmer, round, min_count=2, m
 
 
 
-def select_all_kmer(seq, index, mink, maxk):
+def select_all_kmer(seq, index, mink, maxk, min_count=2, order_mode='default', motif_order_map=None, allowed_min_kmers=None):
 
     #kmers that are selected
     selected_kmers = []
@@ -242,7 +282,18 @@ def select_all_kmer(seq, index, mink, maxk):
     n = 0
     #repeat until no (consequtive) kmers are found
     while True:    
-        res, sa, mask, used_kmer = select_best_kmers(mink, maxk, seq, index, used_kmer, n)
+        res, sa, mask, used_kmer = select_best_kmers(
+            mink,
+            maxk,
+            seq,
+            index,
+            used_kmer,
+            n,
+            min_count=min_count,
+            order_mode=order_mode,
+            motif_order_map=motif_order_map,
+            allowed_min_kmers=allowed_min_kmers,
+        )
         
         if res == {}:
             break
@@ -277,7 +328,7 @@ def select_all_kmer(seq, index, mink, maxk):
     return selected_kmers, marked_positions, seq
 
 
-def select_best_kmers_motif_guided(k_min, k_max, seq, index, used_kmer, round, ref_motifs_dict_r, min_count=2, min_indiv_count=2, min_consecutive_count=2, min_consecutive_bp=6):
+def select_best_kmers_motif_guided(k_min, k_max, seq, index, used_kmer, round, ref_motifs_dict_r, min_count=2, min_indiv_count=2, min_consecutive_count=2, min_consecutive_bp=6, order_mode='default', motif_order_map=None, strict_motifs=False):
     """Select k-mers based on the amount of sequence masked.
 
     :param k_min: the minimum k-mer length
@@ -340,7 +391,8 @@ def select_best_kmers_motif_guided(k_min, k_max, seq, index, used_kmer, round, r
         res.append({'kmer':kmer_s, 'min_kmer': min_kmer, 'suffix_cnt': kmer_cnt, 'total_masked': total_masked, 
                         'max_indiv_seq_count':max_indiv_seq_count, 'max_consecutive_masked':max_consecutive_count * kmer_len, 'pos':positions, 'idx':kmer_idx})
     
-    res.sort(key=lambda x: (x['max_consecutive_masked'], x['max_indiv_seq_count'], x['total_masked'], len(x['kmer']), x['kmer']), reverse=True)
+    allowed_min_kmers = set(ref_motifs_dict_r.keys()) if strict_motifs else None
+    res = sort_candidate_results(res, order_mode=order_mode, motif_order_map=motif_order_map, allowed_min_kmers=allowed_min_kmers)
     
     print(f'KMER EVALUATED: {evaluated}')
     print(f'KMER SELECTED: {len(res)}')
@@ -413,11 +465,8 @@ def select_best_kmers_motif_guided(k_min, k_max, seq, index, used_kmer, round, r
 
 
 
-def select_all_kmer_motif_guided(seq, index, mink, maxk, ref_motifs_list):
-    ref_motifs_dict = {}
-    for motif in ref_motifs_list:
-        ref_motifs_dict[motif] = min([motif[x:] + motif[:x] for x in range(len(motif))])
-    ref_motifs_dict_r = {value: key for key, value in ref_motifs_dict.items()}
+def select_all_kmer_motif_guided(seq, index, mink, maxk, ref_motifs_list, min_count=2, order_mode='default', strict_motifs=False):
+    ref_motifs_dict_r, motif_order_map = build_ref_motif_metadata(ref_motifs_list)
 
     #kmers that are selected
     selected_kmers = []
@@ -429,7 +478,19 @@ def select_all_kmer_motif_guided(seq, index, mink, maxk, ref_motifs_list):
     n = 0
     #repeat until no (consequtive) kmers are found
     while True:    
-        res, sa, mask, used_kmer = select_best_kmers_motif_guided(mink, maxk, seq, index, used_kmer, n, ref_motifs_dict_r)
+        res, sa, mask, used_kmer = select_best_kmers_motif_guided(
+            mink,
+            maxk,
+            seq,
+            index,
+            used_kmer,
+            n,
+            ref_motifs_dict_r,
+            min_count=min_count,
+            order_mode=order_mode,
+            motif_order_map=motif_order_map,
+            strict_motifs=strict_motifs,
+        )
         
         if res == {}:
             break
@@ -463,6 +524,8 @@ def select_all_kmer_motif_guided(seq, index, mink, maxk, ref_motifs_list):
 
     for ref in ref_motifs_list:
         seq, marked_pos = pylibsais.kmer_mask_simple(seq, ref, '#')
+        if len(marked_pos) < min_count:
+            continue
         if marked_pos != []:
             print(ref)
             marked_positions.extend([(e, ref) for e in marked_pos])
@@ -797,6 +860,15 @@ parser.add_argument('-msa', '--msa', dest = 'run_msa', type = str, choices=['Tru
 parser.add_argument('-motif', '--motif', dest = 'ref_motifs', type = str, required = False,
                     help = 'Use guided motif mode, using established motifs for analysis by taking a file with known motifs separated by tabs.', metavar = 'motifs.txt')
 
+parser.add_argument('--only_specified_motifs', default = 'False', type = str, dest = 'only_specified_motifs', choices=['True', 'False'],
+                    help = 'When -motif is provided, only use motifs from the motif file. Boolean (True/False). Default: False')
+
+parser.add_argument('--motif_assignment_order', default = 'default', type = str, dest = 'motif_assignment_order', choices=['default', 'frequency', 'specified'],
+                    help = 'Order for assigning motifs. Use default, frequency, or specified. "specified" follows the order in the -motif file. Default: default')
+
+parser.add_argument('--min_count', default = 2, type = int, dest = 'min_count',
+                    help = 'Minimum total number of motif occurrences across all sequences. Default: 2')
+
 parser.add_argument('-p', '--sample_class', dest = 'sample_class', required = False, 
                     metavar = "metadata.txt", type=str,
                     help = 'Path to a tab separated file with a column for sequence names and a column for class labels. If provided, an extra column will be added to the output file with the class labels.')
@@ -825,6 +897,9 @@ parser.add_argument('--motif_border_width', default = None, dest = 'motif_border
 parser.add_argument('--legend_copy_number', default = 'True', type = str, dest = 'legend_copy_number', choices=['True', 'False'],
                     help = 'Show average copy number in motif legend labels. Boolean (True/False). Default: True')
 
+parser.add_argument('--x_axis_max', default = None, dest = 'x_axis_max', type = int,
+                    help = 'Upper limit of the x-axis in sequence-position units. Use this to crop excess whitespace. Default: full sequence length')
+
 parser.add_argument('-o', '--output_prefix', type = str, dest = 'output_prefix', required = True, metavar = "ouput",
                     help = 'Prefix of output files.')
 
@@ -834,11 +909,20 @@ if unknown:
 
 if args.motif_border_width is not None and args.motif_border_width < 0:
     parser.error("--motif_border_width must be >= 0")
+if args.x_axis_max is not None and args.x_axis_max <= 0:
+    parser.error("--x_axis_max must be > 0")
+if args.min_count < 1:
+    parser.error("--min_count must be >= 1")
+if args.only_specified_motifs == "True" and not args.ref_motifs:
+    parser.error("--only_specified_motifs requires -motif")
+if args.motif_assignment_order == "specified" and not args.ref_motifs:
+    parser.error("--motif_assignment_order specified requires -motif")
 
 cfg.args = args
 if args.motif_border_width is not None:
     cfg.linewidth = args.motif_border_width
 cfg.show_legend_copy_number = (args.legend_copy_number == "True")
+cfg.x_axis_max = args.x_axis_max
 
 #args = parser.parse_args()
 
@@ -856,6 +940,9 @@ min_kmer_size = args.min_kmer_size
 run_msa = args.run_msa
 motif_guided = args.ref_motifs is not None
 ref_motifs = args.ref_motifs
+strict_motifs = args.only_specified_motifs == "True"
+motif_assignment_order = args.motif_assignment_order
+min_count = args.min_count
 output_prefix = args.output_prefix
 figure = args.figure
 reverse = args.reverse
@@ -892,13 +979,29 @@ if reverse == "True":
 seq_concat, seq_index, seq_keys = prepare_suffix_string(all_seq_dict)
 
 if not motif_guided:
-    candidate_kmer, masked_postion, masked_seq = select_all_kmer(seq_concat, seq_index, min_kmer_size, max_kmer_size)
+    candidate_kmer, masked_postion, masked_seq = select_all_kmer(
+        seq_concat,
+        seq_index,
+        min_kmer_size,
+        max_kmer_size,
+        min_count=min_count,
+        order_mode=motif_assignment_order,
+    )
 else:
     with open(ref_motifs, 'r') as ref:
         ref_motifs = ref.readlines()
     ref_motifs_list = [i.strip().split("\t") for i in ref_motifs]
-    ref_motifs_list = [i for l in ref_motifs_list for i in l]
-    candidate_kmer, masked_postion, masked_seq = select_all_kmer_motif_guided(seq_concat, seq_index, min_kmer_size, max_kmer_size, ref_motifs_list)
+    ref_motifs_list = [i for l in ref_motifs_list for i in l if i]
+    candidate_kmer, masked_postion, masked_seq = select_all_kmer_motif_guided(
+        seq_concat,
+        seq_index,
+        min_kmer_size,
+        max_kmer_size,
+        ref_motifs_list,
+        min_count=min_count,
+        order_mode=motif_assignment_order,
+        strict_motifs=strict_motifs,
+    )
 
 masked_postion = mask_all_seq(candidate_kmer, masked_postion, masked_seq)
 
@@ -978,4 +1081,3 @@ if args.profile:
         ps.print_callees()
 
 print('DONE')
-
