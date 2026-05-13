@@ -3,6 +3,7 @@ import binascii
 import numpy
 import Levenshtein
 import sys
+from collections import defaultdict
 
 from Bio import SeqIO,Align
 from mscope.util import MotifPlacement
@@ -289,11 +290,164 @@ class POAAlignerNucleotide(Aligner):
 
         edit_distance = self._calculate_edit_distance(result, seq_ids)            
 
-        ngrouped_positions = self._translate_position(grouped_positions, result, seq_ids)
+        if self._should_reannotate_reference_motifs():
+            motif_order = self._get_reference_motif_order(grouped_positions)
+            if motif_order:
+                ngrouped_positions = self._assign_reference_motifs_to_aligned_sequences(result, seq_ids, motif_order)
+            else:
+                ngrouped_positions = self._translate_position(grouped_positions, result, seq_ids)
+        else:
+            ngrouped_positions = self._translate_position(grouped_positions, result, seq_ids)
 
         sequence_lengths = {key: res.msa_len for key, value in grouped_positions.items()}
 
         return ngrouped_positions, sequence_lengths, edit_distance
+
+    def _should_reannotate_reference_motifs(self):
+        args = getattr(self.cfg, "args", None)
+        return bool(
+            args and
+            getattr(args, "only_specified_motifs", "False") == "True" and
+            getattr(args, "use_all_specified_motifs", "False") == "True" and
+            getattr(args, "ref_motifs", None)
+        )
+
+    def _load_reference_motifs(self):
+        args = getattr(self.cfg, "args", None)
+        if not args or not getattr(args, "ref_motifs", None):
+            return []
+
+        unique_motifs = []
+        seen = set()
+        with open(args.ref_motifs, 'r') as ref_handle:
+            for line in ref_handle:
+                for motif in line.strip().split("\t"):
+                    if motif and motif not in seen:
+                        unique_motifs.append(motif)
+                        seen.add(motif)
+        return unique_motifs
+
+    def _get_reference_motif_order(self, grouped_positions):
+        ref_motifs = self._load_reference_motifs()
+        if not ref_motifs:
+            return []
+
+        motif_counts = defaultdict(float)
+        allowed_motifs = set(ref_motifs)
+        for motifs in grouped_positions.values():
+            for mp in motifs:
+                if not mp.singlebase and mp.motif in allowed_motifs:
+                    motif_counts[mp.motif] += mp.count
+
+        used_motifs = [motif for motif in ref_motifs if motif_counts.get(motif, 0) > 0]
+        order_mode = getattr(getattr(self.cfg, "args", None), "motif_assignment_order", "specified")
+        if order_mode == "frequency":
+            specified_rank = {motif: idx for idx, motif in enumerate(ref_motifs)}
+            return sorted(
+                used_motifs,
+                key=lambda motif: (-motif_counts[motif], specified_rank[motif])
+            )
+        return used_motifs
+
+    def _find_gap_tolerant_match(self, aligned_seq, motif, occupied, start_at=0):
+        if not motif:
+            return None
+
+        for start in range(start_at, len(aligned_seq)):
+            if aligned_seq[start] != motif[0] or aligned_seq[start] == '-' or occupied[start]:
+                continue
+
+            match_positions = []
+            motif_pos = 0
+            seq_pos = start
+            while seq_pos < len(aligned_seq) and motif_pos < len(motif):
+                current_base = aligned_seq[seq_pos]
+                if current_base == '-':
+                    seq_pos += 1
+                    continue
+                if occupied[seq_pos] or current_base != motif[motif_pos]:
+                    break
+                match_positions.append(seq_pos)
+                motif_pos += 1
+                seq_pos += 1
+
+            if motif_pos == len(motif):
+                return match_positions
+
+        return None
+
+    def _match_positions_to_motif_placements(self, motif, match_positions):
+        placements = []
+        if not match_positions:
+            return placements
+
+        consumed = 0
+        run_start = match_positions[0]
+        run_prev = match_positions[0]
+        for pos in match_positions[1:] + [None]:
+            if pos is not None and pos == run_prev + 1:
+                run_prev = pos
+                continue
+
+            placement = MotifPlacement(motif, run_start)
+            placement.stop = run_prev + 1
+            if placement.singlebase:
+                placement.motif = motif[consumed:(consumed + (placement.stop - placement.start))]
+            else:
+                placement.updateCount(consumed / len(motif))
+            placements.append(placement)
+
+            consumed += placement.stop - placement.start
+            if pos is None:
+                break
+            run_start = run_prev = pos
+
+        return placements
+
+    def _build_singlebase_placements(self, aligned_seq, occupied):
+        placements = []
+        current_start = None
+        current_seq = []
+        for pos, base in enumerate(aligned_seq):
+            if base == '-' or occupied[pos]:
+                if current_seq:
+                    placements.append(MotifPlacement(''.join(current_seq), current_start, singlebase=True))
+                    current_start = None
+                    current_seq = []
+                continue
+
+            if current_start is None:
+                current_start = pos
+            current_seq.append(base)
+
+        if current_seq:
+            placements.append(MotifPlacement(''.join(current_seq), current_start, singlebase=True))
+
+        return placements
+
+    def _assign_reference_motifs_to_aligned_sequences(self, result, seq_ids, motif_order):
+        ngrouped_positions = {}
+        for i, seq_id in enumerate(seq_ids):
+            aligned_seq = ''.join(result[i,:].tolist())
+            occupied = numpy.zeros(len(aligned_seq), dtype=bool)
+            motifs = []
+
+            for motif in motif_order:
+                search_start = 0
+                while search_start < len(aligned_seq):
+                    match_positions = self._find_gap_tolerant_match(aligned_seq, motif, occupied, start_at=search_start)
+                    if match_positions is None:
+                        break
+
+                    motifs.extend(self._match_positions_to_motif_placements(motif, match_positions))
+                    occupied[match_positions] = True
+                    search_start = match_positions[-1] + 1
+
+            motifs.extend(self._build_singlebase_placements(aligned_seq, occupied))
+            motifs.sort(key=lambda mp: mp.start)
+            ngrouped_positions[seq_id] = motifs
+
+        return ngrouped_positions
 
     def _translate_position(self, grouped_positions, result, seq_ids):
         """Translate the motifplacement to a new position based on a conversion dictionary from the alignment.

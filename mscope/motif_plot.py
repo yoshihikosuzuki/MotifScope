@@ -508,6 +508,10 @@ class MotifPlot:
         xticks_positions = np.arange(0, self.plot_seq_length + 1, step_size, dtype=float)
         if len(xticks_positions) == 0 or not np.isclose(xticks_positions[-1], self.plot_seq_length):
             xticks_positions = np.append(xticks_positions, float(self.plot_seq_length))
+        if len(xticks_positions) >= 2:
+            last_gap = xticks_positions[-1] - xticks_positions[-2]
+            if last_gap < (0.4 * step_size):
+                xticks_positions = np.delete(xticks_positions, -2)
         xticks_labels = [str(int(x)) if float(x).is_integer() else str(x) for x in xticks_positions]
         ax.tick_params(right=True, left = False, top=False, labelright=True, labelleft=False, labeltop=False, rotation=0)
         ax.set_xticks(xticks_positions + 0.5)
