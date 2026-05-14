@@ -66,19 +66,13 @@ def heatmap(cfg, seq_order, grouped_motif_seq, sequence_lengths, dim_reduction, 
         allowed_motifs = set(embedding_motifs)
         umotifs = [motif for motif in umotifs if motif in allowed_motifs]
 
-    # Create the motif colormap
-    motif_colors = resolve_motif_colors(cfg, nmotifs, cmap)
-    motif_cmap = matplotlib.colors.ListedColormap(motif_colors)
+    if getattr(cfg, "motif_colors", None) is not None:
+        color_order = umotifs + [motif for motif in embedding_motifs if motif not in umotifs]
+    else:
+        color_order = embedding_motifs
 
-    # Normalize for the motif part of the combined colormap
-    norm = matplotlib.colors.BoundaryNorm(np.arange(len(embedding_motifs) + 1) - 0.5, len(embedding_motifs))
-    motif_to_color_idx = {motif: idx for idx, motif in enumerate(embedding_motifs)}
-
-    colorcache = {}
-    def cache_color(value):
-        if value not in colorcache:
-            colorcache[value] = motif_cmap(norm(value))
-        return colorcache[value]
+    motif_colors = resolve_motif_colors(cfg, len(color_order), cmap)
+    motif_to_color = {motif: color for motif, color in zip(color_order, motif_colors)}
  
     singlebase_rectangles = [] 
     rectangles = []
@@ -108,7 +102,7 @@ def heatmap(cfg, seq_order, grouped_motif_seq, sequence_lengths, dim_reduction, 
                     q = QuadMesh(coords, facecolors=xcolors, rasterized=False, lw=singlebase_linewidth, edgecolor=singlebase_edgecolor)
                     ax.add_collection(q)
             else: 
-                color = cache_color(color_value)
+                color = motif_to_color[mp.motif]
                 if not show_borders or not mp.leftborder or not mp.rightborder:
                     rectangles.append(Rectangle((start, ypos), end - start, 1, fill=True,  lw=0, facecolor=color, clip_on=False))
                     if show_borders and mp.leftborder:
@@ -140,7 +134,7 @@ def heatmap(cfg, seq_order, grouped_motif_seq, sequence_lengths, dim_reduction, 
         p = PatchCollection(rectangles, match_original = True)
         ax.add_collection(p)
 
-    legend_colors = [motif_cmap(norm(motif_to_color_idx[motif])) for motif in umotifs]
+    legend_colors = [motif_to_color[motif] for motif in umotifs]
     legend_cmap = matplotlib.colors.ListedColormap(legend_colors)
     legend_norm = matplotlib.colors.BoundaryNorm(np.arange(len(umotifs) + 1) - 0.5, len(umotifs))
 
